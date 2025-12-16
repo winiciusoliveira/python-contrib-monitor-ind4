@@ -23,17 +23,39 @@ with st.sidebar :
 	# 2. Adiciona regras específicas do tema
 	if tema == "Escuro 🌙" :
 		css_rules += """
-	        .stApp { background-color: #0e1117; color: white; }
-
-	        [data-testid="stVerticalBlockBorderWrapper"] {
-	            background-color: #262730 !important;
-	            border: 1px solid #41444d !important;
-	            border-radius: 8px;
-	            padding: 15px;
+	        /* Fundo da aplicação (Preto profundo/Dark Blue) */
+	        .stApp {
+	            background-color: #111827;
+	            color: #e5e7eb;
 	        }
 
-	        [data-testid="stMetricLabel"] { color: #a3a8b8 !important; }
+	        /* CARDS (Cinza escuro destacado) */
+	        [data-testid="stVerticalBlockBorderWrapper"] {
+	            background-color: #1f2937 !important; /* Mais claro que o fundo */
+	            border: 1px solid #374151 !important; /* Borda cinza visível */
+	            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5) !important; /* Sombra para profundidade */
+	            border-radius: 8px !important;
+	            padding: 1rem !important;
+	        }
+
+	        /* Títulos (Branco destacado) */
+	        h1, h2, h3, h4, h5, h6 {
+	            color: #f9fafb !important;
+	        }
+
+	        /* Texto geral */
+	        p, .stMarkdown {
+	            color: #d1d5db !important;
+	        }
+
+	        /* Métricas */
+	        [data-testid="stMetricLabel"] { color: #9ca3af !important; }
 	        [data-testid="stMetricValue"] { color: #ffffff !important; }
+
+	        /* Ajuste na borda da tabela para combinar */
+	        [data-testid="stDataFrame"] {
+	            border: 1px solid #374151 !important;
+	        }
 	        """
 	else :
 		# --- CORREÇÃO DO MODO CLARO ---
