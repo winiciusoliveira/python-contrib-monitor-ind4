@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+requests
+streamlit_autorefresh
+toml
+asyncua
+pex
