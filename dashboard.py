@@ -23,36 +23,62 @@ with st.sidebar :
 	# 2. Adiciona regras específicas do tema
 	if tema == "Escuro 🌙" :
 		css_rules += """
-        .stApp { background-color: #0e1117; color: white; }
+	        .stApp { background-color: #0e1117; color: white; }
 
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            background-color: #262730 !important;
-            border: 1px solid #41444d !important;
-            border-radius: 8px;
-            padding: 15px;
-        }
+	        [data-testid="stVerticalBlockBorderWrapper"] {
+	            background-color: #262730 !important;
+	            border: 1px solid #41444d !important;
+	            border-radius: 8px;
+	            padding: 15px;
+	        }
 
-        [data-testid="stMetricLabel"] { color: #a3a8b8 !important; }
-        [data-testid="stMetricValue"] { color: #ffffff !important; }
-        """
+	        [data-testid="stMetricLabel"] { color: #a3a8b8 !important; }
+	        [data-testid="stMetricValue"] { color: #ffffff !important; }
+	        """
 	else :
-		# Modo Claro (Shadow Design)
+		# --- CORREÇÃO DO MODO CLARO ---
 		css_rules += """
-        .stApp { background-color: #f0f2f6; color: black; }
+	        /* Fundo da aplicação levemente cinza para destacar os cards brancos */
+	        .stApp {
+	            background-color: #f3f4f6;
+	            color: #1f2937;
+	        }
 
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            background-color: #ffffff !important;
-            border: 1px solid #cccccc !important;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1) !important;
-            border-radius: 8px;
-            padding: 15px;
-        }
+	        /* Estilo dos CARDS (Containers com border=True) */
+	        [data-testid="stVerticalBlockBorderWrapper"] {
+	            background-color: #ffffff !important;
+	            border: 1px solid #d1d5db !important; /* Borda cinza mais definida */
+	            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1) !important; /* Sombra suave */
+	            border-radius: 8px !important;
+	            padding: 1rem !important;
+	        }
 
-        h1, h2, h3, h4, h5, h6, p, div { color: #31333F; }
+	        /* Correção de Fontes e Títulos */
+	        h1, h2, h3, h4, h5, h6 {
+	            color: #111827 !important; /* Preto suave */
+	            font-family: sans-serif;
+	        }
 
-        [data-testid="stMetricLabel"] { color: #666666 !important; }
-        [data-testid="stMetricValue"] { color: #000000 !important; }
-        """
+	        /* Texto comum e Markdown (removemos o seletor 'div' que quebrava o layout) */
+	        p, .stMarkdown {
+	            color: #374151 !important;
+	        }
+
+	        /* Métricas (Números grandes) */
+	        [data-testid="stMetricLabel"] {
+	            color: #6b7280 !important; /* Cinza médio */
+	            font-size: 14px;
+	        }
+	        [data-testid="stMetricValue"] {
+	            color: #000000 !important; /* Preto total para destaque */
+	            font-weight: 700;
+	        }
+
+	        /* Ajuste para tabelas ficarem legíveis no claro */
+	        [data-testid="stDataFrame"] {
+	            border: 1px solid #d1d5db !important;
+	        }
+	        """
 	
 	# 3. Injeta tudo de uma vez sem indentação perigosa
 	st.markdown(f"<style>{css_rules}</style>", unsafe_allow_html=True)
