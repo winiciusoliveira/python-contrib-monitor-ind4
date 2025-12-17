@@ -1,192 +1,169 @@
 import time
 from datetime import datetime
-import json
+import sys
 import os
 
-# Módulos locais
-import database
-import network_utils
+# Adiciona o diretório raiz ao path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Importações da nova arquitetura
+from src.infrastructure.database.connection import DatabaseConnection
+from src.infrastructure.database.repositories import MachineRepository, DowntimeRepository, EventRepository
+from src.infrastructure.communication.opc_client import OPCUAClient
+from src.infrastructure.communication.network_client import NetworkClient
+from src.application.services.monitor_service import MonitorService
+from src.domain.enums import CommunicationType
+
+# Importações legadas (enquanto não refatoramos tudo)
 import notifications
 import integration_api
-import opc_utils
-import opc_config
 
-# --- CONFIGURAÇÃO ---
+
+# ============== CONFIGURAÇÃO ==============
+INTERVALO_SCAN = 5  # segundos
 LIMITE_FALHAS = 3
-INTERVALO_SCAN = 5
-TEMPO_ESTABILIDADE = 60  # Para confirmar que VOLTOU a produzir
+TEMPO_ESTABILIDADE = 60  # segundos
 
-def carregar_maquinas() :
-	try :
-		with open('config.json', 'r', encoding='utf-8') as f :
-			return json.load(f)
-	except :
-		return []
 
-def salvar_dados_completos(estado_maquinas) :
-	dados = {
-		"metadata" : {
-			"ultimo_sinal" : datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "status_servico" : "RODANDO", "versao_python" : "3.12.10 (Smart Database)"
-		}, "maquinas" : estado_maquinas
-	}
-	database.salvar_estado_persistente(dados)
+def carregar_node_ids_opc():
+    """
+    Carrega mapeamento de node_ids do OPC a partir do config antigo
+    """
+    import opc_config
 
-def loop_principal() :
-	print(f"🚀 Serviço Monitoramento (DB + Filtros) - {datetime.now()}")
-	database.init_db()
-	
-	json_completo = database.carregar_estado_persistente()
-	estado_persistente = json_completo.get("maquinas", { }) if "maquinas" in json_completo else json_completo
-	
-	# Dicionários de controle
-	# Armazena o datetime de QUANDO parou: {'Tear#01': datetime_obj}
-	inicio_paradas = { }
-	# Controle de estabilidade para retorno (Histerese)
-	estabilidade_recuperacao = { }
-	
-	primeira_execucao = True
-	
-	while True :
-		inicio_scan = time.time()
-		maquinas = carregar_maquinas()
-		print(f"🔍 Scan: {len(maquinas)} máquinas...", end=" ")
-		
-		# Coletas
-		dados_rede = network_utils.scan_machines(maquinas)
-		dados_api = integration_api.fetch_metris_status()
-		mapa_resultados_opc = opc_utils.check_opc_batch(maquinas, opc_config.OPC_MAP)
-		
-		houve_mudanca = False
-		timestamp_agora = datetime.now()  # Objeto datetime para cálculos
-		str_agora = timestamp_agora.strftime('%Y-%m-%d %H:%M:%S')
-		
-		for item_rede in dados_rede :
-			nome_config = item_rede['Máquina']
-			ip_maquina = item_rede['IP']
-			status_infra = item_rede['Status']
-			
-			maq_config = next((m for m in maquinas if m['nome'] == nome_config), None)
-			api_id = maq_config.get('api_id', '') if maq_config else ''
-			
-			# Dados API e Config
-			info_api = dados_api.get(api_id, { })
-			status_api_desc = info_api.get('descricao', 'DESCONHECIDO')
-			cor_api = info_api.get('cor', '#808080')
-			unidade = maq_config.get('unidade', 'Geral')
-			planta = maq_config.get('planta', 'Geral')
-			setor = maq_config.get('setor', 'Geral')
-			
-			# Leitura OPC
-			opc_real_value = None
-			if "ONLINE" in status_infra or "FALHA OPC" not in status_infra :
-				opc_real_value = mapa_resultados_opc.get(api_id, None)
-			
-			# --- DECISÃO DE STATUS ---
-			status_detectado = status_api_desc
-			cor_final = cor_api
-			
-			if "SEM CONEXÃO" in status_infra :
-				status_detectado = "🔴 SEM REDE"
-				cor_final = "#dc3545"
-			elif "FALHA OPC" in status_infra :
-				status_detectado = "⚠️ FALHA PORTA OPC"
-				cor_final = "#ffc107"
-			elif opc_real_value is True :
-				# Se está rodando
-				if "AGUARDANDO" in status_api_desc or "Unknown" in status_api_desc :
-					status_detectado = "🟢 PRODUZINDO"
-				else :
-					status_detectado = f"🟢 PRODUZINDO | {status_api_desc}"
-				cor_final = "#28a745"
-			elif opc_real_value is False :
-				status_detectado = f"⏹️ PARADA | {status_api_desc}"
-			elif opc_real_value is None :
-				status_detectado = "⚠️ ERRO LEITURA TAG"
-				cor_final = "#fd7e14"
-			
-			# --- PROCESSAMENTO DE ESTADO ---
-			memoria = estado_persistente.get(nome_config, { })
-			status_anterior = memoria.get('status', 'DESCONHECIDO')
-			contador = memoria.get('contador', 0)
-			
-			# Novo contador de falha de rede
-			novo_contador = contador + 1 if "SEM REDE" in status_detectado else 0
-			status_para_salvar = status_detectado
-			
-			# 1. Debounce de Rede
-			if "SEM REDE" in status_detectado and novo_contador < LIMITE_FALHAS :
-				status_para_salvar = status_anterior
-			
-			# 2. Histerese de Retorno (Só confirma PRODUZINDO após TEMPO_ESTABILIDADE)
-			elif "PRODUZINDO" in status_detectado and "PRODUZINDO" not in status_anterior :
-				if nome_config not in estabilidade_recuperacao :
-					estabilidade_recuperacao[nome_config] = time.time()
-				
-				if (time.time() - estabilidade_recuperacao[nome_config]) < TEMPO_ESTABILIDADE :
-					status_para_salvar = status_anterior  # Segura o status antigo
-				else :
-					# CONFIRMOU QUE VOLTOU! HORA DE FECHAR O CICLO DE PARADA
-					status_para_salvar = status_detectado
-					estabilidade_recuperacao.pop(nome_config, None)
-					
-					# Se estava em parada, calcula e salva no banco
-					if nome_config in inicio_paradas :
-						dt_inicio = inicio_paradas.pop(nome_config)
-						dt_fim = timestamp_agora
-						
-						# Salva no Banco SQL (Novo Schema)
-						mins, tempo_fmt, motivo_limpo = database.salvar_ciclo_parada(nome_config, planta, setor, dt_inicio, dt_fim, status_anterior)
-						
-						# Dispara Notificação Filtrada
-						msg = f"✅ **{nome_config} Voltou**\n" \
-						      f"🕒 Ficou parado: {tempo_fmt} ({mins} min)\n" \
-						      f"🔧 Motivo: {motivo_limpo}"
-						
-						notifications.enviar_notificacao_inteligente(msg, motivo_limpo, mins)
-			
-			# 3. Lógica de Parada (Registra início imediatamente)
-			elif "PRODUZINDO" not in status_detectado :
-				if nome_config in estabilidade_recuperacao :
-					estabilidade_recuperacao.pop(nome_config, None)
-				
-				# Se não estava parado antes, marca o início
-				if "PRODUZINDO" in status_anterior and nome_config not in inicio_paradas :
-					inicio_paradas[
-						nome_config] = timestamp_agora  # Opcional: Avisar no Teams imediatamente que parou?   # Se quiser avisar "Parou" na hora, descomente:  # notifications.enviar_notificacao_inteligente(f"🛑 {nome_config} PAROU: {status_detectado}", "PARADA", 0)
-				
-				status_para_salvar = status_detectado
-			
-			# Salva mudanças para o Dashboard (Tempo Real)
-			if status_para_salvar != status_anterior :
-				houve_mudanca = True
-				# Registra evento bruto para debug
-				database.registrar_evento(nome_config, status_anterior, status_para_salvar)
-			
-			estado_persistente[nome_config] = {
-				'status' : status_para_salvar,
-				'cor' : cor_final,
-				'desde' : str_agora if status_para_salvar != status_anterior else memoria.get('desde', str_agora),
-				'contador' : novo_contador,
-				'ip' : ip_maquina,
-				'unidade' : unidade,
-				'planta' : planta,
-				'setor' : setor
-			}
-		
-		# Inicialização e Watchdog
-		if primeira_execucao :
-			notifications.enviar_notificacao_inteligente("🚀 Sistema Reiniciado (Nova Lógica DB)", "SISTEMA", 0)
-			primeira_execucao = False
-			salvar_dados_completos(estado_persistente)
-		
-		if houve_mudanca or (time.time() - globals().get('last_save', 0) > 30) :
-			salvar_dados_completos(estado_persistente)
-			globals()['last_save'] = time.time()
-			if houve_mudanca : print("💾 JSON Atualizado.")
-		
-		tempo_gasto = time.time() - inicio_scan
-		print(f"⏱️ {tempo_gasto:.2f}s")
-		time.sleep(max(0.0, INTERVALO_SCAN - tempo_gasto))
+    return opc_config.OPC_MAP
 
-if __name__ == "__main__" :
-	loop_principal()
+
+def atualizar_config_com_node_ids(machine_repo: MachineRepository):
+    """
+    Atualiza configuração das máquinas com node_ids do OPC
+    """
+    node_map = carregar_node_ids_opc()
+
+    for api_id, opc_data in node_map.items():
+        machine = machine_repo.get_by_id(api_id)
+        if machine:
+            machine.comunicacao.node_id = opc_data.get('node_running')
+            machine.comunicacao.endpoint = opc_data.get('endpoint')
+
+
+def loop_principal():
+    """Loop principal de monitoramento"""
+    print(f"🚀 Serviço de Monitoramento v2.0 - {datetime.now()}")
+    print("📦 Arquitetura: Clean Architecture + DDD")
+
+    # Inicializa infraestrutura
+    db = DatabaseConnection()
+    db.init_schema()
+    print("✅ Banco de dados inicializado")
+
+    # Inicializa repositórios
+    machine_repo = MachineRepository()
+    downtime_repo = DowntimeRepository(db)
+    event_repo = EventRepository(db)
+
+    # Atualiza configuração com node_ids OPC
+    atualizar_config_com_node_ids(machine_repo)
+    print("✅ Configurações OPC carregadas")
+
+    # Inicializa protocolos de comunicação
+    opc_client = OPCUAClient(timeout=2)
+    network_client = NetworkClient(timeout=1)
+
+    communication_protocols = {
+        CommunicationType.OPC_UA.value: opc_client,
+        CommunicationType.NETWORK_PING.value: network_client
+    }
+
+    # Inicializa serviço de monitoramento
+    monitor_service = MonitorService(
+        machine_repo=machine_repo,
+        downtime_repo=downtime_repo,
+        event_repo=event_repo,
+        communication_protocols=communication_protocols,
+        limite_falhas=LIMITE_FALHAS,
+        tempo_estabilidade=TEMPO_ESTABILIDADE
+    )
+
+    print(f"✅ Monitorando {len(machine_repo.get_all())} máquinas")
+    print("=" * 60)
+
+    # Notifica início
+    try:
+        notifications.enviar_notificacao_inteligente(
+            "🚀 Sistema de Monitoramento v2.0 Iniciado",
+            "SISTEMA",
+            0
+        )
+    except:
+        print("⚠️ Notificações não disponíveis")
+
+    primeira_execucao = True
+    contador_scan = 0
+
+    while True:
+        inicio_scan = time.time()
+        contador_scan += 1
+
+        try:
+            print(f"\n🔍 Scan #{contador_scan} - {datetime.now().strftime('%H:%M:%S')}")
+
+            # Busca dados da API externa (se disponível)
+            dados_api = {}
+            try:
+                dados_api = integration_api.fetch_metris_status()
+                print(f"   ✅ API Externa: {len(dados_api)} registros")
+            except Exception as e:
+                print(f"   ⚠️ API Externa indisponível: {e}")
+
+            # Atualiza descrições de status das máquinas com dados da API
+            for machine in machine_repo.get_all():
+                if machine.api_id in dados_api:
+                    api_info = dados_api[machine.api_id]
+                    machine.status_descricao = api_info.get('descricao', '')
+                    machine.cor = api_info.get('cor', machine.cor)
+
+            # Executa scan de todas as máquinas
+            maquinas_atualizadas = monitor_service.scan_machines()
+
+            # Estatísticas do scan
+            stats = monitor_service.get_dashboard_metrics()
+
+            print(f"   📊 Status: "
+                  f"{stats['maquinas_produzindo']} Prod | "
+                  f"{stats['maquinas_paradas']} Paradas | "
+                  f"{stats['maquinas_criticas']} Críticas")
+
+            print(f"   📈 Disponibilidade: {stats['disponibilidade_geral']:.1f}%")
+
+            # Salva estado
+            machine_repo.save_state()
+
+            if primeira_execucao:
+                print("   💾 Estado inicial salvo")
+                primeira_execucao = False
+
+        except Exception as e:
+            print(f"   ❌ Erro no scan: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Controle de tempo
+        tempo_gasto = time.time() - inicio_scan
+        print(f"   ⏱️ Tempo de scan: {tempo_gasto:.2f}s")
+
+        # Sleep ajustado
+        sleep_time = max(0.0, INTERVALO_SCAN - tempo_gasto)
+        if sleep_time > 0:
+            time.sleep(sleep_time)
+
+
+if __name__ == "__main__":
+    try:
+        loop_principal()
+    except KeyboardInterrupt:
+        print("\n\n🛑 Serviço interrompido pelo usuário")
+    except Exception as e:
+        print(f"\n\n❌ Erro fatal: {e}")
+        import traceback
+        traceback.print_exc()
