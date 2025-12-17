@@ -56,11 +56,12 @@ class MachineRepository(IMachineRepository):
                 setor=item.get('setor', 'Geral')
             )
 
+            # Lê node_id do config.json (consolidado - Single Source of Truth)
             comunicacao = CommunicationConfig(
                 tipo=CommunicationType.OPC_UA,  # Padrão
                 endpoint=f"opc.tcp://{item['ip']}:{item.get('porta', 4840)}",
                 porta=item.get('porta', 4840),
-                node_id=item.get('node_id')
+                node_id=item.get('node_id')  # Agora vem do config.json
             )
 
             machine = Machine(

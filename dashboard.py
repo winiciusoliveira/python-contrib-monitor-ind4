@@ -19,6 +19,15 @@ from src.presentation.components.charts import (
 )
 
 # ============== CONFIGURAÇÃO ==============
+# Constantes de configuração
+REFRESH_INTERVAL_MS = 5000  # Intervalo de refresh em milissegundos
+CACHE_TTL_MACHINES = 5  # TTL cache de máquinas (segundos)
+CACHE_TTL_ANALYTICS = 30  # TTL cache de analytics (segundos)
+CACHE_TTL_HISTORY = 60  # TTL cache de histórico (segundos)
+INACTIVITY_THRESHOLD_MIN = 30  # Threshold de inatividade em minutos
+MAX_INACTIVE_DISPLAY = 5  # Máximo de máquinas inativas a exibir
+TOP_OFFENDERS_LIMIT = 10  # Limite de top offenders no Pareto
+
 st.set_page_config(
     page_title="Monitoramento Industrial 4.0",
     layout="wide",
@@ -114,12 +123,47 @@ analytics_service = services['analytics_service']
 # ============== CABEÇALHO ==============
 st.title("🏭 Monitoramento Industrial 4.0")
 
-# Auto-refresh a cada 5 segundos
+# Auto-refresh
 from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=5000, key="ui_refresh")
+count = st_autorefresh(interval=REFRESH_INTERVAL_MS, key="ui_refresh")
 
-# ============== CARREGA DADOS ==============
-maquinas = machine_repo.get_all()
+# ============== INICIALIZA SESSION STATE ==============
+if 'last_load_time' not in st.session_state:
+    st.session_state.last_load_time = datetime.now()
+
+# ============== CARREGA DADOS (COM CACHE) ==============
+@st.cache_data(ttl=CACHE_TTL_MACHINES, show_spinner=False)
+def load_machines(_machine_repo):
+    """Carrega máquinas com cache"""
+    return _machine_repo.get_all()
+
+@st.cache_data(ttl=CACHE_TTL_ANALYTICS, show_spinner=False)
+def get_inactive_machines(_analytics_service, threshold_minutes=INACTIVITY_THRESHOLD_MIN):
+    """Carrega máquinas inativas com cache"""
+    return _analytics_service.get_inactive_machines_today(threshold_minutes=threshold_minutes)
+
+@st.cache_data(ttl=CACHE_TTL_HISTORY, show_spinner=False)
+def get_top_offenders(_analytics_service, limit=TOP_OFFENDERS_LIMIT):
+    """Carrega top offenders com cache"""
+    return _analytics_service.get_top_offenders(limit=limit)
+
+@st.cache_data(ttl=CACHE_TTL_HISTORY, show_spinner=False)
+def get_downtime_by_turno(_analytics_service, data_inicio, data_fim):
+    """Carrega distribuição por turno com cache"""
+    return _analytics_service.get_downtime_by_turno(data_inicio, data_fim)
+
+@st.cache_data(ttl=CACHE_TTL_ANALYTICS, show_spinner=False)
+def get_historical_data(_downtime_repo, equipamento, data_inicio, data_fim, min_duracao=0):
+    """Carrega histórico com cache"""
+    if equipamento == "Todos":
+        historico = _downtime_repo.get_by_period(data_inicio, data_fim)
+    else:
+        historico = _downtime_repo.get_by_machine(equipamento, data_inicio, data_fim)
+
+    # Filtra por duração
+    return [h for h in historico if h.minutos_parado >= min_duracao and not h.is_ativo()]
+
+maquinas = load_machines(machine_repo)
 
 if not maquinas:
     st.info("⏳ Aguardando dados do serviço de monitoramento...")
@@ -251,12 +295,12 @@ with tab1:
     st.divider()
 
     # Máquinas com mais tempo paradas HOJE
-    st.subheader("⚠️ Máquinas Inativas Hoje (> 30 min)")
+    st.subheader(f"⚠️ Máquinas Inativas Hoje (> {INACTIVITY_THRESHOLD_MIN} min)")
 
-    inativas_hoje = analytics_service.get_inactive_machines_today(threshold_minutes=30)
+    inativas_hoje = get_inactive_machines(analytics_service, threshold_minutes=INACTIVITY_THRESHOLD_MIN)
 
     if inativas_hoje:
-        for maq_data in inativas_hoje[:5]:  # Top 5
+        for maq_data in inativas_hoje[:MAX_INACTIVE_DISPLAY]:
             with st.container(border=True):
                 col_a, col_b, col_c = st.columns([2, 1, 1])
 
@@ -278,7 +322,7 @@ with tab1:
                             f"{periodo['duracao']:.0f} min ({periodo['motivo']})"
                         )
     else:
-        st.success("✅ Nenhuma máquina inativa por mais de 30 minutos hoje!")
+        st.success(f"✅ Nenhuma máquina inativa por mais de {INACTIVITY_THRESHOLD_MIN} minutos hoje!")
 
 # ============== ABA 2: DETALHES ==============
 with tab2:
@@ -324,9 +368,9 @@ with tab3:
     st.info(f"📅 Analisando período de {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
 
     # Top Offenders (Pareto)
-    st.subheader("🏆 Top 10 Máquinas com Mais Paradas")
+    st.subheader(f"🏆 Top {TOP_OFFENDERS_LIMIT} Máquinas com Mais Paradas")
 
-    top_offenders = analytics_service.get_top_offenders(limit=10)
+    top_offenders = get_top_offenders(analytics_service, limit=TOP_OFFENDERS_LIMIT)
 
     if top_offenders:
         df_top = pd.DataFrame(top_offenders)
@@ -347,7 +391,7 @@ with tab3:
     # Distribuição por Turno
     st.subheader("🌓 Distribuição de Paradas por Turno")
 
-    tempo_por_turno = analytics_service.get_downtime_by_turno(data_inicio, data_fim)
+    tempo_por_turno = get_downtime_by_turno(analytics_service, data_inicio, data_fim)
 
     if any(tempo_por_turno.values()):
         df_turno = pd.DataFrame(list(tempo_por_turno.items()), columns=['Turno', 'Tempo (min)'])
@@ -371,14 +415,8 @@ with tab4:
     with col_f2:
         min_duracao = st.number_input("Duração mínima (min):", min_value=0, value=0)
 
-    # Busca histórico
-    if equipamento_filter == "Todos":
-        historico = downtime_repo.get_by_period(data_inicio, data_fim)
-    else:
-        historico = downtime_repo.get_by_machine(equipamento_filter, data_inicio, data_fim)
-
-    # Filtra por duração
-    historico_filtrado = [h for h in historico if h.minutos_parado >= min_duracao and not h.is_ativo()]
+    # Busca histórico (com cache)
+    historico_filtrado = get_historical_data(downtime_repo, equipamento_filter, data_inicio, data_fim, min_duracao)
 
     st.metric("Total de Paradas no Período", len(historico_filtrado))
 

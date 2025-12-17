@@ -13,8 +13,24 @@ class DatabaseConnection:
     def connect(self) -> sqlite3.Connection:
         """Cria ou retorna conexão existente"""
         if self._connection is None:
-            self._connection = sqlite3.connect(self.db_name, check_same_thread=False)
+            # Timeout de 30s para evitar locks
+            self._connection = sqlite3.connect(
+                self.db_name,
+                timeout=30.0,
+                check_same_thread=False,
+                isolation_level=None  # Autocommit mode
+            )
             self._connection.row_factory = sqlite3.Row  # Permite acesso por nome de coluna
+
+            # Ativa WAL mode para melhor concorrência
+            self._connection.execute('PRAGMA journal_mode=WAL')
+
+            # Otimizações de performance
+            self._connection.execute('PRAGMA synchronous=NORMAL')  # Mais rápido, ainda seguro com WAL
+            self._connection.execute('PRAGMA cache_size=-64000')    # 64MB de cache
+            self._connection.execute('PRAGMA temp_store=MEMORY')    # Temp tables em memória
+            self._connection.execute('PRAGMA mmap_size=268435456')  # 256MB mmap
+
         return self._connection
 
     def close(self):
@@ -27,6 +43,9 @@ class DatabaseConnection:
         """Inicializa o schema do banco de dados"""
         conn = self.connect()
         cursor = conn.cursor()
+
+        # Begin transaction para criação de schema
+        cursor.execute('BEGIN')
 
         # Tabela de paradas históricas
         cursor.execute('''

@@ -25,28 +25,6 @@ LIMITE_FALHAS = 3
 TEMPO_ESTABILIDADE = 60  # segundos
 
 
-def carregar_node_ids_opc():
-    """
-    Carrega mapeamento de node_ids do OPC a partir do config antigo
-    """
-    import opc_config
-
-    return opc_config.OPC_MAP
-
-
-def atualizar_config_com_node_ids(machine_repo: MachineRepository):
-    """
-    Atualiza configuração das máquinas com node_ids do OPC
-    """
-    node_map = carregar_node_ids_opc()
-
-    for api_id, opc_data in node_map.items():
-        machine = machine_repo.get_by_id(api_id)
-        if machine:
-            machine.comunicacao.node_id = opc_data.get('node_running')
-            machine.comunicacao.endpoint = opc_data.get('endpoint')
-
-
 def loop_principal():
     """Loop principal de monitoramento"""
     print(f"🚀 Serviço de Monitoramento v2.0 - {datetime.now()}")
@@ -61,10 +39,7 @@ def loop_principal():
     machine_repo = MachineRepository()
     downtime_repo = DowntimeRepository(db)
     event_repo = EventRepository(db)
-
-    # Atualiza configuração com node_ids OPC
-    atualizar_config_com_node_ids(machine_repo)
-    print("✅ Configurações OPC carregadas")
+    print("✅ Configurações carregadas do config.json")
 
     # Inicializa protocolos de comunicação
     opc_client = OPCUAClient(timeout=2)
