@@ -22,8 +22,10 @@ class DatabaseConnection:
             )
             self._connection.row_factory = sqlite3.Row  # Permite acesso por nome de coluna
 
-            # Ativa WAL mode para melhor concorrência
+            # --- CORREÇÃO AXIOM ---
+            # Ativa WAL mode para permitir leitura (Dashboard) e escrita (Service) simultâneas.
             self._connection.execute('PRAGMA journal_mode=WAL')
+            # ----------------------
 
             # Otimizações de performance
             self._connection.execute('PRAGMA synchronous=NORMAL')  # Mais rápido, ainda seguro com WAL
